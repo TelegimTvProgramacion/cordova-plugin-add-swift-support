@@ -12,7 +12,7 @@
 *
 *  - It updates the ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES build setting to YES.
 *
-*  - It updates the SWIFT_VERSION to 4.0.
+*  - It updates the SWIFT_VERSION to 5.0 if not already set.
 */
 
 const fs = require('fs');
@@ -56,12 +56,23 @@ module.exports = context => {
       });
 
       if (!iosPlatformVersion) {
+        console.log('iOS platform not found, skipping Swift support setup.');
         return;
       }
 
-      projectName = config.name();
-      projectPath = path.join(platformPath, projectName);
-      pbxprojPath = path.join(platformPath, projectName + '.xcodeproj', 'project.pbxproj');
+      // Detect the Xcode project and source folder
+      const detectionResult = detectProjectAndPath(platformPath, config);
+      if (!detectionResult) {
+        throw new Error('Could not find a valid Xcode project in ' + platformPath + '. Please ensure the iOS platform is properly added.');
+      }
+
+      projectName = detectionResult.projectName;
+      projectPath = detectionResult.projectPath;
+      pbxprojPath = detectionResult.pbxprojPath;
+      
+      console.log('Detected iOS project:', projectName);
+      console.log('Project path:', projectPath);
+      
       xcodeProject = xcode.project(pbxprojPath);
       pluginsPath = path.join(projectPath, 'Plugins');
 
@@ -80,6 +91,7 @@ module.exports = context => {
           '#import <Cordova/CDV.h>'];
         fs.writeFileSync(bridgingHeaderPath, bridgingHeaderContent.join('\n'), { encoding: 'utf-8', flag: 'w' });
         xcodeProject.addHeaderFile('Bridging-Header.h');
+        console.log('Created new Bridging-Header.h file at:', bridgingHeaderPath);
       }
 
       buildConfigs = xcodeProject.pbxXCBuildConfigurationSection();
@@ -145,9 +157,11 @@ module.exports = context => {
                 xcodeProject.updateBuildProperty('SWIFT_VERSION', swiftVersion, buildConfig.name);
                 console.log('Use Swift language version', swiftVersion);
               } else {
-                xcodeProject.updateBuildProperty('SWIFT_VERSION', '4.0', buildConfig.name);
-                console.log('Update SWIFT version to 4.0', buildConfig.name);
+                xcodeProject.updateBuildProperty('SWIFT_VERSION', '5.0', buildConfig.name);
+                console.log('Update SWIFT version to 5.0', buildConfig.name);
               }
+            } else {
+              console.log('SWIFT_VERSION already defined as', xcodeProject.getBuildProperty('SWIFT_VERSION', buildConfig.name), 'for build configuration', buildConfig.name);
             }
 
             if (buildConfig.name === 'Debug') {
@@ -160,6 +174,7 @@ module.exports = context => {
         }
 
         fs.writeFileSync(pbxprojPath, xcodeProject.writeSync());
+        console.log('Successfully updated project.pbxproj at:', pbxprojPath);
       });
     });
   }
@@ -211,4 +226,49 @@ const getPlatformVersionsFromFileSystem = (context, projectRoot) => {
   });
 
   return Promise.all(platformVersions);
+};
+
+const detectProjectAndPath = (platformPath, config) => {
+  // First, try to find any .xcodeproj in the platforms/ios directory
+  let projectFiles = [];
+  try {
+    const files = fs.readdirSync(platformPath);
+    projectFiles = files.filter(file => file.endsWith('.xcodeproj'));
+  } catch (err) {
+    console.log('Error reading platforms/ios directory:', err.message);
+    return null;
+  }
+
+  if (projectFiles.length === 0) {
+    console.log('No .xcodeproj found in', platformPath);
+    return null;
+  }
+
+  // Use the first .xcodeproj found
+  const projectFile = projectFiles[0];
+  const projectName = projectFile.replace('.xcodeproj', '');
+  const pbxprojPath = path.join(platformPath, projectFile, 'project.pbxproj');
+  const projectPath = path.join(platformPath, projectName);
+
+  // Verify that the project.pbxproj exists
+  try {
+    fs.statSync(pbxprojPath);
+  } catch (err) {
+    console.log('project.pbxproj not found at:', pbxprojPath);
+    return null;
+  }
+
+  // Verify that the source folder exists (or create it if needed)
+  try {
+    fs.statSync(projectPath);
+  } catch (err) {
+    // The source folder might not exist yet, which is fine for some operations
+    console.log('Source folder not found at:', projectPath, '(will be created if needed)');
+  }
+
+  return {
+    projectName: projectName,
+    projectPath: projectPath,
+    pbxprojPath: pbxprojPath
+  };
 };
